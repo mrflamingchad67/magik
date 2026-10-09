@@ -1,0 +1,12 @@
+[package]
+name = "magik-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Safe, idiomatic Rust image abstraction over ImageMagick/MagickWand. Internal layer of magik."
+license = "MIT"
+publish = false
+
+[dependencies]
+# Dependency direction: magik-sys <- magik-core. Never reversed.
+magik-sys = { path = "../magik-sys" }

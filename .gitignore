@@ -1,0 +1,34 @@
+# Rust / cargo
+/target/
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Compiled extension modules (produced by `maturin develop` into python/magik)
+*.pyd
+*.so
+*.dylib
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Benchmark output and generated inputs
+/benches/results/
+/benches/inputs/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

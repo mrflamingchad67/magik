@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = ["crates/magik-sys", "crates/magik-core"]
+
+[package]
+name = "magik"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "A Pillow-inspired Python image API backed by ImageMagick/MagickWand through a Rust core"
+readme = "README.md"
+license = "MIT"
+publish = false
+
+# The compiled extension module. Maturin renames the artifact to
+# `magik/_magik.abi3.pyd` (see [tool.maturin] in pyproject.toml), so the
+# PyInit symbol must be named `_magik`.
+[lib]
+name = "_magik"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+# An `extension-module` cdylib cannot be unit-tested by cargo: the test binary
+# would statically import `pythonXY.dll`, which is not resolvable from
+# target/debug. All behaviour here is covered by the Python suite in `tests/`,
+# so cargo's lib-test target is disabled rather than left to fail.
+test = false
+doctest = false
+
+[dependencies]
+# Dependency direction (never reversed):
+#   magik-sys <- magik-core <- (this crate: PyO3) <- python/magik
+magik-core = { path = "crates/magik-core" }
+pyo3 = { version = "0.29", features = ["extension-module"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

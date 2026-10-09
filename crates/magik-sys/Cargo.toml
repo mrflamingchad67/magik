@@ -1,0 +1,12 @@
+[package]
+name = "magik-sys"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Raw FFI bindings to the ImageMagick/MagickWand C API. Internal layer of magik; contains all unsafe code."
+license = "MIT"
+publish = false
+links = "MagickWand"
+build = "build.rs"
+
+[dependencies]
