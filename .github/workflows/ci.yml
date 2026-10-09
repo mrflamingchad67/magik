@@ -30,9 +30,11 @@ env:
   RUSTFLAGS: -D warnings
   # Pinned ImageMagick, matching the version this project is developed against.
   # Headers are NOT required (magik-sys hand-declares all FFI); the link step
-  # needs the MagickWand import libraries, which the Chocolatey package omits.
+  # needs the MagickWand import libraries, which the Chocolatey *runtime*
+  # package omits. This is the same artifact Scoop installs on a dev machine,
+  # verified to contain lib\CORE_RL_MagickWand_.lib.
   IM_VERSION: '7.1.2-32'
-  IM_ARCHIVE: 'ImageMagick-7.1.2-32-Q16-HDRI-x64-dll.exe'
+  IM_URL: 'https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-32/ImageMagick-7.1.2-32-Q16-HDRI-x64-dll.exe'
 
 jobs:
   rust:
@@ -83,26 +85,36 @@ jobs:
           }
 
           if (-not $found) {
-            Write-Host "No MagickWand import library found; installing $env:IM_ARCHIVE"
+            Write-Host "No MagickWand import library found; installing $env:IM_VERSION"
             $installer = Join-Path $env:RUNNER_TEMP 'imagemagick.exe'
-            Invoke-WebRequest -Uri "https://download.imagemagick.org/archive/binaries/$env:IM_ARCHIVE" `
+            Invoke-WebRequest -Uri $env:IM_URL `
                               -OutFile $installer -UseBasicParsing
             Write-Host ("  downloaded {0:N1} MB" -f ((Get-Item $installer).Length / 1MB))
 
             $target = Join-Path $env:RUNNER_TEMP 'ImageMagick'
-            $log     = Join-Path $env:RUNNER_TEMP 'imagemagick-install.log'
-            # Inno Setup installer. /DIR must stay quoted: an unquoted path with
-            # a space makes Inno fall back to its default location.
+            $log    = Join-Path $env:RUNNER_TEMP 'imagemagick-install.log'
+            # No /DIR: this installer ignores it and installs to its default
+            # location under C:\Program Files.
             $proc = Start-Process -FilePath $installer -Wait -PassThru -NoNewWindow `
-              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',
-                            "/DIR=`"$target`"", "/LOG=`"$log`""
+              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART', "/LOG=`"$log`""
             Write-Host "  installer exit code: $($proc.ExitCode)"
-            if (Test-Path $log) { Get-Content $log -Tail 15 | ForEach-Object { Write-Host "  [inno] $_" } }
-            Write-Host "  installed tree:"
-            Get-ChildItem $target -Recurse -Filter '*.lib' -EA SilentlyContinue |
-              Select-Object -First 10 | ForEach-Object { Write-Host "    $($_.FullName)" }
+            if (Test-Path $log) { Get-Content $log -Tail 12 | ForEach-Object { Write-Host "  [inno] $_" } }
 
-            if (Test-Path (Join-Path $target 'lib\CORE_RL_MagickWand_.lib')) { $found = $target }
+            # Re-evaluate every candidate rather than trusting $target: the
+            # installer uses its own default location, and checking only $target
+            # reported "not found" even when the install had succeeded.
+            $found = $null
+            foreach ($root in ($candidates + @($target) +
+                               (Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' -EA SilentlyContinue |
+                                ForEach-Object { $_.FullName })) | Select-Object -Unique) {
+              if (Test-Path (Join-Path $root 'lib\CORE_RL_MagickWand_.lib')) { $found = $root; break }
+            }
+            Write-Host "  installed tree:"
+            foreach ($root in (@($target) + (Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' -EA SilentlyContinue |
+                              ForEach-Object { $_.FullName })) | Select-Object -Unique) {
+              $libs = Get-ChildItem (Join-Path $root 'lib') -Filter 'CORE_RL_*.lib' -EA SilentlyContinue
+              if ($libs) { Write-Host ("    {0}: {1}" -f $root, ($libs.Name -join ', ')) }
+            }
           }
 
           if (-not $found) {
@@ -190,19 +202,25 @@ jobs:
           }
           if (-not $found) {
             $installer = Join-Path $env:RUNNER_TEMP 'imagemagick.exe'
-            Invoke-WebRequest -Uri "https://download.imagemagick.org/archive/binaries/$env:IM_ARCHIVE" `
+            Invoke-WebRequest -Uri $env:IM_URL `
                               -OutFile $installer -UseBasicParsing
             Write-Host ("  downloaded {0:N1} MB" -f ((Get-Item $installer).Length / 1MB))
-            $target = Join-Path $env:RUNNER_TEMP 'ImageMagick'
             $log     = Join-Path $env:RUNNER_TEMP 'imagemagick-install.log'
+            # No /DIR: this installer ignores it and installs to its default
+            # location under C:\Program Files, which is what gets scanned below.
             $proc = Start-Process -FilePath $installer -Wait -PassThru -NoNewWindow `
-              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',
-                            "/DIR=`"$target`"", "/LOG=`"$log`""
+              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART', "/LOG=`"$log`""
             Write-Host "  installer exit code: $($proc.ExitCode)"
-            if (Test-Path $log) { Get-Content $log -Tail 15 | ForEach-Object { Write-Host "  [inno] $_" } }
-            Get-ChildItem $target -Recurse -Filter '*.lib' -EA SilentlyContinue |
-              Select-Object -First 10 | ForEach-Object { Write-Host "    $($_.FullName)" }
-            if (Test-Path (Join-Path $target 'lib\CORE_RL_MagickWand_.lib')) { $found = $target }
+            if (Test-Path $log) { Get-Content $log -Tail 12 | ForEach-Object { Write-Host "  [inno] $_" } }
+
+            # Re-evaluate every candidate: the installer uses its own default
+            # location, so $target alone reported "not found" even on success.
+            $found = $null
+            foreach ($root in ($candidates +
+                               (Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' -EA SilentlyContinue |
+                                ForEach-Object { $_.FullName })) | Select-Object -Unique) {
+              if (Test-Path (Join-Path $root 'lib\CORE_RL_MagickWand_.lib')) { $found = $root; break }
+            }
           }
           if (-not $found) {
             throw "No CORE_RL_MagickWand_.lib anywhere on this runner; magik-sys cannot link MagickWand."
