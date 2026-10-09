@@ -365,9 +365,26 @@ impl Image {
     /// opposite of ImageMagick's native `MagickRotateImage`; magik negates the
     /// angle internally.
     ///
-    /// Corners exposed by a non-multiple-of-90 rotation are filled with
-    /// `background` (default: transparent). The canvas is *not* expanded to fit
-    /// the rotated image — Pillow's `expand=True` is not supported in Stage 01.
+    /// # Resulting dimensions
+    ///
+    /// This depends on the angle, and the difference is worth knowing before you
+    /// rely on a size:
+    ///
+    /// * **Multiples of 90 degrees** transpose exactly: `0`, `180` and `360`
+    ///   preserve the size, while `90` and `270` swap width and height.
+    /// * **Any other angle** grows the image. `MagickRotateImage` expands the
+    ///   canvas so the rotated corners are not clipped, and magik passes that
+    ///   through unchanged, so a 6x4 image rotated by 45 degrees becomes 10x10.
+    ///   The result is at least as large as the source in both axes.
+    ///
+    /// Pillow's `expand=True`/`expand=False` split has no equivalent here: there
+    /// is currently no way to ask for a fixed canvas, because doing so would
+    /// need a separate resize that Stage 04 does not add.
+    ///
+    /// Areas exposed by a non-right-angle rotation are filled with `background`,
+    /// which defaults to `"none"` (fully transparent). Because the default fill
+    /// carries alpha, `getpixel` on a rotated RGB image returns a 4-tuple at the
+    /// corners even though the source was 3-channel.
     pub fn rotate(&self, angle: f64, background: Option<&str>) -> Result<Self> {
         if !angle.is_finite() {
             return Err(Error::operation(format!(
@@ -394,6 +411,17 @@ impl Image {
     }
 
     /// Converts the image to grayscale.
+    ///
+    /// Alpha is **preserved**, never dropped or composited: an `RGBA` image
+    /// becomes gray-plus-transparency, reported by [`Image::mode`] as `"LA"` and
+    /// by [`Image::pixel_mode`] as `Rgba`. Because magik's pixel transfer has no
+    /// 2-sample gray+alpha layout, `getpixel`/`pixels` return **4 samples**
+    /// (`(gray, gray, gray, alpha)`) for such an image even though `mode` says
+    /// `"LA"`. The colour itself is replicated across the three channels rather
+    /// than stored once.
+    ///
+    /// Converting an already-grayscale image is a no-op, so this is safe to
+    /// apply twice.
     pub fn grayscale(&self) -> Result<Self> {
         self.derive(
             ErrorKind::Operation,
@@ -403,6 +431,14 @@ impl Image {
     }
 
     /// Applies a Gaussian blur of `radius` with `sigma` deviation.
+    ///
+    /// The blur is applied to **every channel, including alpha** — the same
+    /// choice Pillow's `GaussianBlur` makes. On an `RGBA` image this means the
+    /// transparency is smeared along with the colour, so a hard transparency
+    /// edge becomes soft. That is usually what you want, but it is not the same
+    /// as blurring the colour channels and leaving alpha untouched.
+    ///
+    /// `blur(0.0, 0.0)` is an identity: it returns an equivalent copy.
     pub fn blur(&self, radius: f64, sigma: f64) -> Result<Self> {
         if !radius.is_finite() || !sigma.is_finite() || radius < 0.0 || sigma < 0.0 {
             return Err(Error::operation(format!(

@@ -1,0 +1,149 @@
+# Continuous integration for Magik.
+#
+# Why Windows: `crates/magik-sys/build.rs` links against the MagickWand import
+# libraries under their Windows names (`CORE_RL_MagickWand_`). ImageMagick's
+# Linux packages use a different naming scheme (`libMagickWand-7.Q16HDRI.so`), so
+# a Linux runner cannot link this project without extra work in the build script.
+# Windows is also what the project is developed and verified on.
+#
+# ImageMagick itself is a *system* requirement, not a Python or Cargo
+# dependency: magik ships no codecs of its own and links against whatever
+# MagickWand the machine provides.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch rather than queueing them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep the build honest and reproducible.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, tests)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Rust is preinstalled on GitHub's Windows runners. `rust-toolchain.toml`
+      # in the repository root pins the channel and the rustfmt/clippy
+      # components, so simply invoking cargo installs whatever is missing and
+      # every contributor gets the same toolchain as CI.
+      - name: Report the toolchain
+        run: |
+          rustc --version
+          cargo --version
+          cargo fmt --version
+          cargo clippy --version
+
+      - name: Report ImageMagick
+        run: magick -version
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ---- static checks, no build of the extension required ----
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build (release)
+        run: cargo build --release --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+      # The whole point of the crate layering: no `unsafe` may live above the
+      # FFI boundary. This is the invariant Stages 01-04 were built to protect.
+      - name: Verify unsafe is confined to magik-sys
+        shell: pwsh
+        run: |
+          $leaks = rg --pcre2 '^(?!\s*//)(?!\s*//!)(?!\s*\*).*\bunsafe\b.*$' crates/magik-core src
+          if ($LASTEXITCODE -eq 0 -and $leaks) {
+            Write-Error "unsafe code found outside magik-sys:`n$leaks"
+            exit 1
+          }
+          Write-Host "OK: no unsafe outside magik-sys"
+
+  python:
+    name: Python (${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor declared in pyproject.toml, so it is the one worth
+        # proving; 3.12 is a modern LTS-ish interpreter.
+        python-version: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # `rust-toolchain.toml` pins the channel and components.
+      - name: Report the toolchain
+        run: rustc --version && cargo --version
+
+      - name: Report ImageMagick
+        run: magick -version
+
+      - name: Cache cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-py${{ matrix.python-version }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-py${{ matrix.python-version }}-
+
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip maturin pytest
+
+      # `maturin develop` builds the extension into the active interpreter, which
+      # is how the project is tested locally.
+      - name: Build and install the extension
+        run: python -m maturin develop --release
+
+      - name: Run the Python test suite
+        run: python -m pytest -q
+
+      # Packaging is a separate concern from the in-place build: it catches
+      # missing files in the wheel that `develop` would paper over.
+      - name: Build a wheel
+        run: python -m maturin build --release
+
+      - name: Install the wheel into a clean environment and retest
+        shell: pwsh
+        run: |
+          python -m venv .wheeltest
+          $python = ".\.wheeltest\Scripts\python.exe"
+          $wheel = (Get-ChildItem target\wheels\*.whl | Select-Object -First 1).FullName
+          & $python -m pip install --upgrade pip
+          & $python -m pip install $wheel
+          & $python -m pip install pytest
+          # A belt-and-braces check that the import really came from the wheel
+          # rather than from the source tree sitting in the checkout.
+          & $python -c "import magik; assert 'wheeltest' in magik.__file__, magik.__file__"
+          & $python -m pytest tests -q

@@ -456,7 +456,13 @@ impl PyImage {
 
     /// Rotates counter-clockwise by `angle` degrees.
     ///
-    /// `background` defaults to transparent. The canvas is not expanded.
+    /// `background` is keyword-only and defaults to transparent.
+    ///
+    /// The resulting size depends on the angle: multiples of 90 transpose the
+    /// image (`0`/`180`/`360` keep the size, `90`/`270` swap width and height),
+    /// while any other angle **grows** it, because ImageMagick expands the canvas
+    /// so the rotated corners are not clipped. A 6x4 image rotated 45 degrees
+    /// therefore comes back as 10x10, not 6x4.
     #[pyo3(signature = (angle, *, background = None))]
     fn rotate(&self, angle: f64, background: Option<&str>) -> PyResult<Self> {
         guard(|| self.inner.rotate(angle, background).map(Self::new).py())

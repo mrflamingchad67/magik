@@ -24,6 +24,7 @@ Exposing the complete ImageMagick feature set is a long-term goal and is
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Supported operations](#supported-operations)
+- [Core operations](#core-operations)
 - [Image I/O and formats](#image-io-and-formats)
 - [Pixel access](#pixel-access)
 - [Metadata and the `mode` caveat](#metadata-and-the-mode-caveat)
@@ -279,13 +280,13 @@ image.crop((10, 20, 210, 140))  # same as image.crop(10, 20, 210, 140)
 | Save to buffer | `image.to_bytes(format=None)` | returns `bytes` |
 | Save to stream | `image.save(file_object, format=None)` | anything with `.write()` |
 | Copy | `image.copy()` | independent duplicate |
-| Resize | `image.resize(w, h, filter=None)` | `filter` is a kernel name; default `lanczos` |
-| Crop | `image.crop(l, t, r, b)` | `r`/`b` exclusive, Pillow convention |
-| Rotate | `image.rotate(angle, background=None)` | **counter-clockwise**, like Pillow |
-| Flip | `image.flip()` | vertical mirror |
-| Flop | `image.flop()` | horizontal mirror |
-| Grayscale | `image.grayscale()` | colorspace transform |
-| Blur | `image.blur(radius, sigma=None)` | Gaussian; `sigma` defaults to `radius / 2` |
+| Resize | `image.resize(w, h, filter=None)` | exact box, no aspect-ratio inference; default `lanczos` |
+| Crop | `image.crop(l, t, r, b)` | `r`/`b` exclusive; **must be inside the image** |
+| Rotate | `image.rotate(angle, background=None)` | **counter-clockwise**; `background` is keyword-only |
+| Flip | `image.flip()` | vertical mirror (top ↔ bottom) |
+| Flop | `image.flop()` | horizontal mirror (left ↔ right) |
+| Grayscale | `image.grayscale()` | colorspace transform; **alpha preserved** |
+| Blur | `image.blur(radius, sigma=None)` | Gaussian; `sigma` defaults to `radius / 2`; blurs alpha too |
 | **Read one pixel** | `image.getpixel((x, y), depth=None)` | see [Pixel access](#pixel-access) |
 | **Write one pixel** | `image.putpixel((x, y), value, depth=None)` | **returns a new image** |
 | **Write a region** | `image.putpixels(origin, size, data, depth=None)` | **returns a new image** |
@@ -295,6 +296,106 @@ image.crop((10, 20, 210, 140))  # same as image.crop(10, 20, 210, 140)
 `magik.filters()`, `magik.colorspaces()`, `magik.compressions()` and
 `magik.modes()` list the names accepted by `filter=`, `with_colorspace()`,
 `with_compression()` and the pixel API.
+
+---
+
+## Core operations
+
+Every operation is **immutable**: it returns a new `Image` and leaves the receiver
+untouched, so an image can safely be reused as the base for several results.
+
+```python
+thumb = image.resize(80, 60)
+full  = image.resize(1920, 1080)   # `image` is still the original
+```
+
+### Resize
+
+`image.resize(width, height, filter=None)` resamples to **exactly** that box. It
+never infers an aspect ratio and never preserves one — asking for `20x5` gives a
+20x5 image. Dimensions must both be greater than zero; `0` or a negative value
+raises `MagikOperationError` rather than producing an empty image.
+
+`filter` names the resampling kernel (`magik.filters()` lists them) and defaults
+to `lanczos`. The same input and arguments always produce identical output.
+
+### Crop
+
+`image.crop(left, top, right, bottom)` uses Pillow's convention: **`right` and
+`bottom` are exclusive**, so `crop(0, 0, 50, 40)` on a 100x80 image yields a
+50x40 image.
+
+The box **must lie inside the image**. Pillow silently pads out-of-bounds
+requests with black; magik raises `MagikOperationError` instead, because padding
+would require extra canvas work that magik does not do. A one-pixel box
+(`crop(0, 0, 1, 1)`) is perfectly valid.
+
+### Rotate — the size depends on the angle
+
+This is the one operation whose output geometry is not obvious, so it is worth
+stating plainly:
+
+| Angle | Resulting size | Why |
+|---|---|---|
+| `0`, `180`, `360` | unchanged | exact multiples of a half turn |
+| `90`, `270` | width and height **swapped** | exact quarter turns transpose |
+| anything else | **larger in both axes** | the canvas grows so no corner is clipped |
+
+So a 6x4 image rotated 90 degrees becomes 4x6, but rotated 45 degrees becomes
+10x10. That growth is ImageMagick's `MagickRotateImage` expanding the canvas, and
+magik passes it through unchanged. There is currently no way to request a fixed
+canvas — Pillow's `expand=True`/`expand=False` split has no equivalent.
+
+Positive angles rotate **counter-clockwise**, matching Pillow. ImageMagick's
+native call turns the other way, so magik negates the angle internally.
+
+`background` fills the corners exposed by an oblique rotation and is
+**keyword-only**. It defaults to `"none"` (fully transparent), which means
+`getpixel` at an exposed corner returns a 4-tuple even when the source was
+3-channel:
+
+```python
+image.rotate(45).getpixel((0, 0))                       # (0, 0, 0, 0)
+image.rotate(45, background="white").getpixel((0, 0))    # (255, 255, 255)
+```
+
+Non-finite angles (`nan`, `inf`) raise `MagikOperationError`.
+
+### Grayscale — alpha is preserved
+
+`image.grayscale()` converts colour to gray and **never drops or flattens
+transparency**:
+
+| Source | `mode` | `pixel_mode` | Samples per pixel |
+|---|---|---|---|
+| `RGB` | `L` | `L` | 1 |
+| `RGBA` | `LA` | `RGBA` | **4** |
+
+For an `RGBA` source the result reports `mode == "LA"` (Pillow's gray-plus-alpha
+name) but returns **four** samples, `(gray, gray, gray, alpha)`, because magik's
+pixel transfer has no 2-sample layout. The colour is replicated across the three
+channels rather than stored once.
+
+Applying it twice is a no-op, and an already-grayscale image is left alone.
+
+### Blur
+
+`image.blur(radius, sigma=None)` applies a Gaussian blur. `sigma` defaults to
+`radius / 2`. `blur(0, 0)` returns an equivalent copy.
+
+**Every channel is blurred, including alpha** — the same choice Pillow's
+`GaussianBlur` makes. On an image with a hard transparency edge this softens the
+alpha along with the colour, which is usually what you want but is not the same
+as blurring colour alone.
+
+Negative, `nan` or infinite parameters raise `MagikOperationError`.
+
+### Flip and flop
+
+`image.flip()` mirrors vertically (top ↔ bottom) and `image.flop()` mirrors
+horizontally (left ↔ right). Neither changes the size, both are exact, and
+applying either twice returns the original. They are distinct operations: on a
+non-symmetric image the two produce different results, and they commute.
 
 ---
 
@@ -920,11 +1021,18 @@ Known and intentional at this stage:
   change**, so `len(image.pixels())` is not stable across a PNG round trip of a
   flat image. Real transparency is never dropped. Use `MIFF` when you need an
   exact, unoptimised round trip.
-* **No encoder quality or tuning knobs.** `to_bytes()` and `save()` take only a
-  format name. JPEG and WebP quality, subsampling and interlace settings are
-  reachable through the low-level `image.magick` option API
-  (`with_compression_quality`, `with_compression`), but there is no Pillow-style
-  `quality=` keyword yet.
+* **No `quality=` knob.** `to_bytes()` and `save()` take only a format name. JPEG
+  and WebP quality, subsampling and interlace settings are reachable through the
+  low-level `image.magick` option API (`with_compression_quality`,
+  `with_compression`), but there is no Pillow-style `quality=` keyword yet.
+* **`rotate()` cannot use a fixed canvas.** Pillow's `expand=True`/`expand=False`
+  has no equivalent: an oblique rotation always grows the image, because
+  ImageMagick expands the canvas to avoid clipping. Requesting the original
+  dimensions afterwards via `resize()` is the workaround.
+* **Crop does not pad.** An out-of-bounds crop box raises rather than padding
+  with black the way Pillow does.
+* **`grayscale()` of `RGBA` returns four samples**, not the two that `mode == "LA"`
+  implies, because the pixel transfer has no 2-sample gray+alpha layout.
 * **ImageMagick DLLs are not bundled.** The wheel links against MagickWand but
   does not ship it, so ImageMagick 7 must be installed and `MAGICK_HOME` (or the
   loader search path) must resolve it at runtime. On Windows the DLL directories
@@ -960,10 +1068,11 @@ Roughly, in dependency order:
 1. ~~core image engine~~ (**Stage 01**)
 2. ~~pixel access and buffer round-tripping~~ (**Stage 02**)
 3. ~~image I/O and format handling~~ (**Stage 03**)
-4. compositing, pasting and drawing primitives
-5. multi-frame / animated format support
-6. broadening `image.magick` towards the MagickWand surface
-7. keeping `magik-core` backend-agnostic enough for a second engine
+4. ~~core image operations: resize, crop, rotate, grayscale, blur, flip/flop~~ (**Stage 04**)
+5. compositing, pasting and drawing primitives
+6. multi-frame / animated format support
+7. broadening `image.magick` towards the MagickWand surface
+8. keeping `magik-core` backend-agnostic enough for a second engine
 
 ---
 

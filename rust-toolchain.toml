@@ -1,0 +1,19 @@
+# Pinned Rust toolchain for magik.
+#
+# Why pin at all: CI runs `cargo fmt --check` and `clippy -D warnings`, and both
+# have changed their output across releases. A floating toolchain would let a
+# nightly rustup bump turn into a red build for reasons unrelated to the code.
+#
+# Why the components list: `cargo fmt` and `cargo clippy` below are the same
+# commands CI runs, so declaring them here means a contributor's `cargo fmt`
+# behaves identically to CI's rather than failing locally with "component not
+# installed".
+#
+# `channel` tracks a release line rather than `nightly`: nothing in this project
+# uses nightly-only features, and a stable channel keeps contributors' toolchains
+# small and reproducible.
+
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
