@@ -163,6 +163,21 @@ pub fn colorspace_from_name(name: &str) -> Option<u32> {
     lookup(name, COLORSPACES)
 }
 
+/// Resolves a channel name to its ImageMagick channel mask.
+///
+/// The mask itself is positional - `red` and `cyan` are both `0x0001`, meaning
+/// "the first channel" - so this only maps a *name* onto a position. Whether the
+/// image actually has that channel is a separate question, answered by
+/// [`crate::image::Image::extract_channel`] against the image type.
+pub fn channel_from_name(name: &str) -> Option<u32> {
+    lookup(name, CHANNELS)
+}
+
+/// Every channel name magik accepts, in a stable order.
+pub fn channel_names() -> impl Iterator<Item = &'static str> {
+    CHANNELS.iter().map(|(name, _)| *name)
+}
+
 /// Canonical ImageMagick name for a `CompressionType` value.
 pub fn compression_name(value: u32) -> &'static str {
     match value {
@@ -268,6 +283,52 @@ pub fn filter_from_name(name: &str) -> Option<u32> {
 
 /// The resampling filter magik uses when none is specified.
 pub const DEFAULT_FILTER: u32 = sys::LANCZOS_FILTER;
+
+/// Channel names mapped to their ImageMagick channel mask.
+///
+/// The masks are positional aliases in ImageMagick, so several names share a
+/// value: `red`, `cyan` and `gray` are all "the first channel". Which of them is
+/// valid depends on the image's type, which is checked separately.
+const CHANNELS: &[(&str, u32)] = &[
+    ("red", sys::RED_CHANNEL),
+    ("r", sys::RED_CHANNEL),
+    ("green", sys::GREEN_CHANNEL),
+    ("g", sys::GREEN_CHANNEL),
+    ("blue", sys::BLUE_CHANNEL),
+    ("b", sys::BLUE_CHANNEL),
+    ("alpha", sys::ALPHA_CHANNEL),
+    ("a", sys::ALPHA_CHANNEL),
+    ("cyan", sys::CYAN_CHANNEL),
+    ("c", sys::CYAN_CHANNEL),
+    ("magenta", sys::MAGENTA_CHANNEL),
+    ("m", sys::MAGENTA_CHANNEL),
+    ("yellow", sys::YELLOW_CHANNEL),
+    ("y", sys::YELLOW_CHANNEL),
+    ("black", sys::BLACK_CHANNEL),
+    ("k", sys::BLACK_CHANNEL),
+];
+
+/// The channel *roles* a given ImageMagick image type actually carries.
+///
+/// Used to reject nonsense before it reaches the native call: asking a grayscale
+/// image for "red", or an RGB image for "cyan", is an error rather than a
+/// silently wrong answer.
+pub fn available_channels(image_type: u32) -> &'static [&'static str] {
+    match image_type {
+        sys::BILEVEL_TYPE | sys::GRAYSCALE_TYPE => &[],
+        sys::GRAYSCALE_ALPHA_TYPE | sys::PALETTE_ALPHA_TYPE | sys::PALETTE_BILEVEL_ALPHA_TYPE => {
+            &["alpha"]
+        }
+        sys::PALETTE_TYPE => &[],
+        sys::TRUECOLOR_TYPE | sys::OPTIMIZE_TYPE => &["red", "green", "blue"],
+        sys::TRUECOLOR_ALPHA_TYPE => &["red", "green", "blue", "alpha"],
+        sys::COLOR_SEPARATION_TYPE => &["cyan", "magenta", "yellow", "black"],
+        sys::COLOR_SEPARATION_ALPHA_TYPE => &["cyan", "magenta", "yellow", "black", "alpha"],
+        // Unknown types are not listed; the caller reports the type rather than
+        // guessing which channels it might have.
+        _ => &[],
+    }
+}
 
 const COLORSPACES: &[(&str, u32)] = &[
     ("cmyk", sys::CMYK_COLORSPACE),

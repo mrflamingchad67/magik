@@ -483,6 +483,46 @@ impl PyImage {
         guard(|| self.inner.grayscale().map(Self::new).py())
     }
 
+    // -- Stage 05: colorspace, channels, alpha, precision -------------------
+
+    /// Converts the image into another colorspace, transforming the pixels.
+    ///
+    /// This is not the same as assigning a colorspace: for an RGB pixel
+    /// `(0, 0, 200)`, `convert_colorspace("Gray")` returns the luminance `14`,
+    /// whereas treating those same samples as gray yields `0` - the red channel.
+    ///
+    /// Accepts any name from `magik.colorspaces()`, case-insensitively.
+    fn convert_colorspace(&self, name: &str) -> PyResult<Self> {
+        guard(|| self.inner.convert_colorspace(name).map(Self::new).py())
+    }
+
+    /// Extracts one channel as a new single-channel image.
+    ///
+    /// Supported names: `red`, `green`, `blue`, `alpha`, and the CMYK roles
+    /// `cyan`, `magenta`, `yellow`, `black`. Requesting a channel the image does
+    /// not have - `red` from a grayscale image, say - raises `MagikOperationError`.
+    fn extract_channel(&self, name: &str) -> PyResult<Self> {
+        guard(|| self.inner.extract_channel(name).map(Self::new).py())
+    }
+
+    /// Whether the image carries an alpha channel.
+    ///
+    /// Read from ImageMagick's own alpha state, not inferred from `mode` or
+    /// `channels`: a CMYK image has four channels but no alpha.
+    #[getter]
+    fn has_alpha(&self) -> bool {
+        self.inner.has_alpha()
+    }
+
+    /// Quantises the image to 8 or 16 bits per sample.
+    ///
+    /// Reducing the depth discards precision that converting back cannot
+    /// recover. This is the image's storage depth and is independent of the
+    /// `depth=` argument accepted by `pixels()` and friends.
+    fn convert_depth(&self, bits: u32) -> PyResult<Self> {
+        guard(|| self.inner.convert_depth(bits).map(Self::new).py())
+    }
+
     /// Applies a Gaussian blur.
     ///
     /// `sigma` defaults to `radius / 2`.

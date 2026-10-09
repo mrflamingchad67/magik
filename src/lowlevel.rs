@@ -243,6 +243,23 @@ pub fn colorspaces() -> PyResult<Py<PyList>> {
     })
 }
 
+/// Module-level helper: the channel names `extract_channel` accepts.
+///
+/// Single-letter aliases (`"r"`, `"g"`, `"b"`, `"a"`, `"c"`, `"m"`, `"y"`,
+/// `"k"`) are also accepted but are omitted here to keep the list readable.
+#[pyfunction]
+pub fn channels() -> PyResult<Py<PyList>> {
+    Python::attach(|py| {
+        let list = PyList::empty(py);
+        for name in [
+            "red", "green", "blue", "alpha", "cyan", "magenta", "yellow", "black",
+        ] {
+            list.append(name)?;
+        }
+        Ok(list.unbind())
+    })
+}
+
 /// Module-level helper: names accepted by `with_compression`.
 #[pyfunction]
 pub fn compressions() -> PyResult<Py<PyList>> {

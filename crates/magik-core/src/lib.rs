@@ -51,9 +51,10 @@ pub mod pixel;
 pub use error::{Error, ErrorKind, Result};
 pub use image::{filter_by_name, imagemagick_version, Image, ImageMetadata};
 pub use magick::{
-    channels_for_image_type, colorspace_from_name, colorspace_name, compression_from_name,
-    compression_name, filter_from_name, filter_name, image_type_name, MagickVersion, PixelColor,
-    Wand, DEFAULT_FILTER,
+    available_channels, channel_from_name, channel_names, channels_for_image_type,
+    colorspace_from_name, colorspace_name, compression_from_name, compression_name,
+    filter_from_name, filter_name, image_type_name, MagickVersion, PixelColor, Wand,
+    DEFAULT_FILTER,
 };
 pub use pixel::{PixelMode, SampleDepth};
 

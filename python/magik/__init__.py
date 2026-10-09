@@ -67,6 +67,7 @@ try:
     from ._magik import (  # noqa: E402
         Image,
         MagickHandle,
+        channels,
         colorspaces,
         compressions,
         default_filter,
@@ -104,6 +105,7 @@ __all__ = [
     "open",
     "version",
     "default_filter",
+    "channels",
     "colorspaces",
     "compressions",
     "filters",

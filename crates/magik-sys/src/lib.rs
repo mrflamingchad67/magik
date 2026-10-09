@@ -62,6 +62,13 @@ pub struct PixelWand {
 ///
 /// ImageMagick spells this `MagickBooleanType`; it is a C enum and therefore
 /// `int`-sized on every platform ImageMagick supports.
+/// C `size_t`, the type of `MagickSetImageDepth`'s depth argument.
+///
+/// Rust's `usize` is `size_t` on every target this crate supports. The stable
+/// alias `std::ffi::c_size_t` is still unstable, so the mapping is spelled out
+/// here rather than imported.
+pub type SizeType = usize;
+
 pub type MagickBooleanType = c_uint;
 
 pub const MAGICK_FALSE: MagickBooleanType = 0;
@@ -635,6 +642,36 @@ pub const LONG_LONG_PIXEL: StorageType = 5;
 pub const QUANTUM_PIXEL: StorageType = 6;
 pub const SHORT_PIXEL: StorageType = 7;
 
+/// `ChannelType` — a bitmask selecting image channels.
+///
+/// Transcribed from `MagickCore/channel.h` / `MagickCore/pixel.h` in the
+/// installed ImageMagick 7 headers.
+///
+/// **These are positional aliases, not per-colorspace identities.** The header
+/// declares `RedChannel`, `GrayChannel`, `CyanChannel` and `LChannel` all equal
+/// to `0x0001`: the value means "the first channel", and which colour that *is*
+/// depends on the image's colorspace. magik therefore validates the requested
+/// name against the image type before calling into this; see
+/// [`crate::wand::Wand::separate_channel`].
+pub type ChannelType = c_uint;
+
+pub const UNDEFINED_CHANNEL: ChannelType = 0x0000;
+pub const RED_CHANNEL: ChannelType = 0x0001;
+pub const GRAY_CHANNEL: ChannelType = 0x0001;
+pub const CYAN_CHANNEL: ChannelType = 0x0001;
+pub const L_CHANNEL: ChannelType = 0x0001;
+pub const GREEN_CHANNEL: ChannelType = 0x0002;
+pub const MAGENTA_CHANNEL: ChannelType = 0x0002;
+pub const A_CHANNEL: ChannelType = 0x0002;
+pub const BLUE_CHANNEL: ChannelType = 0x0004;
+pub const B_CHANNEL: ChannelType = 0x0004;
+pub const YELLOW_CHANNEL: ChannelType = 0x0004;
+pub const BLACK_CHANNEL: ChannelType = 0x0008;
+pub const ALPHA_CHANNEL: ChannelType = 0x0010;
+pub const OPACITY_CHANNEL: ChannelType = 0x0010;
+pub const INDEX_CHANNEL: ChannelType = 0x0020;
+pub const COMPOSITE_CHANNELS: ChannelType = 0x001F;
+
 /// `AlphaChannelOption` — how an alpha channel is activated, removed or shaped.
 pub type AlphaChannelOption = c_uint;
 
@@ -765,4 +802,21 @@ extern "C" {
     /// # Safety
     /// `wand` must be valid.
     pub fn MagickGetImageAlphaChannel(wand: *mut MagickWand) -> MagickBooleanType;
+
+    /// Replaces the image with the specified channel alone.
+    ///
+    /// Transcribed from `MagickWand/magick-image.h`. Note this is
+    /// `MagickSeparateImage`, not `MagickSeparateImageChannel`: the latter does
+    /// not exist in the installed ImageMagick 7 headers, so it is not declared
+    /// here.
+    ///
+    /// # Safety
+    /// `wand` must be valid.
+    pub fn MagickSeparateImage(wand: *mut MagickWand, channel: ChannelType) -> MagickBooleanType;
+
+    /// Sets the image's depth, quantising the pixels to it.
+    ///
+    /// # Safety
+    /// `wand` must be valid.
+    pub fn MagickSetImageDepth(wand: *mut MagickWand, depth: SizeType) -> MagickBooleanType;
 }

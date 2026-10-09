@@ -33,7 +33,7 @@ pub mod lowlevel;
 pub mod pixel;
 
 use image::PyImage;
-use lowlevel::{colorspaces, compressions, filters, version_dict};
+use lowlevel::{channels, colorspaces, compressions, filters, version_dict};
 
 /// Runs `f`, converting any Rust panic into a `MagikInternalError`.
 ///
@@ -93,6 +93,7 @@ fn _magik(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(default_filter, module)?)?;
 
     // Low-level foundation.
+    module.add_function(wrap_pyfunction!(channels, module)?)?;
     module.add_function(wrap_pyfunction!(colorspaces, module)?)?;
     module.add_function(wrap_pyfunction!(compressions, module)?)?;
     module.add_function(wrap_pyfunction!(filters, module)?)?;

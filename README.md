@@ -25,6 +25,7 @@ Exposing the complete ImageMagick feature set is a long-term goal and is
 - [Quick start](#quick-start)
 - [Supported operations](#supported-operations)
 - [Core operations](#core-operations)
+- [Colour, channels and precision](#colour-channels-and-precision)
 - [Image I/O and formats](#image-io-and-formats)
 - [Pixel access](#pixel-access)
 - [Metadata and the `mode` caveat](#metadata-and-the-mode-caveat)
@@ -349,6 +350,10 @@ image.crop((10, 20, 210, 140))  # same as image.crop(10, 20, 210, 140)
 | Flip | `image.flip()` | vertical mirror (top ↔ bottom) |
 | Flop | `image.flop()` | horizontal mirror (left ↔ right) |
 | Grayscale | `image.grayscale()` | colorspace transform; **alpha preserved** |
+| **Convert colorspace** | `image.convert_colorspace(name)` | genuine transform; see [conversion vs assignment](#converting-versus-assigning-a-colorspace) |
+| **Extract a channel** | `image.extract_channel(name)` | single-channel result; names from `magik.channels()` |
+| **Alpha presence** | `image.has_alpha` | read from ImageMagick, not inferred |
+| **Convert depth** | `image.convert_depth(bits)` | 8 or 16; narrowing is irreversible |
 | Blur | `image.blur(radius, sigma=None)` | Gaussian; `sigma` defaults to `radius / 2`; blurs alpha too |
 | **Read one pixel** | `image.getpixel((x, y), depth=None)` | see [Pixel access](#pixel-access) |
 | **Write one pixel** | `image.putpixel((x, y), value, depth=None)` | **returns a new image** |
@@ -356,9 +361,9 @@ image.crop((10, 20, 210, 140))  # same as image.crop(10, 20, 210, 140)
 | **Read all pixels** | `image.pixels(depth=None)` | one ImageMagick call, one `bytes` |
 | **Pixel mode** | `image.pixel_mode` | `"L"`, `"RGB"`, `"RGBA"`, ... |
 
-`magik.filters()`, `magik.colorspaces()`, `magik.compressions()` and
-`magik.modes()` list the names accepted by `filter=`, `with_colorspace()`,
-`with_compression()` and the pixel API.
+`magik.filters()`, `magik.colorspaces()`, `magik.compressions()`,
+`magik.channels()` and `magik.modes()` list the names accepted by `filter=`,
+`with_colorspace()`, `with_compression()`, `extract_channel()` and the pixel API.
 
 ---
 
@@ -459,6 +464,156 @@ Negative, `nan` or infinite parameters raise `MagikOperationError`.
 horizontally (left ↔ right). Neither changes the size, both are exact, and
 applying either twice returns the original. They are distinct operations: on a
 non-symmetric image the two produce different results, and they commute.
+
+---
+
+## Colour, channels and precision
+
+### Converting versus assigning a colorspace
+
+These are different operations that accept the same names, and they return
+different numbers. For an `RGB` pixel of `(0, 0, 200)`:
+
+```python
+image.convert_colorspace("Gray").getpixel((0, 0))     # 14  <- recomputed luminance
+image.magick.with_colorspace("Gray").getpixel((0, 0)) #  0  <- samples untouched
+```
+
+`convert_colorspace("Gray")` computes the luminance
+(`0.2126·R + 0.7152·G + 0.0722·B` = 14.4). `with_colorspace()` only *declares*
+that the existing sample values should be read as gray, so the first sample is
+still the red channel — `0`. The latter lives on the low-level `image.magick`
+handle; the high-level API exposes conversion, because silently misreading pixel
+values is rarely what a caller wants.
+
+Names come from `magik.colorspaces()` and are case-insensitive; `"Gray"`,
+`"grey"` and `"l"` are accepted. An unknown name raises `MagikFormatError`.
+Dimensions are preserved, and alpha survives when the destination can represent
+it.
+
+`image.grayscale()` is exactly `convert_colorspace("Gray")`, kept as a
+convenience name.
+
+### Channel extraction
+
+```python
+red   = image.extract_channel("red")     # single-channel "L" image
+alpha = image.extract_channel("alpha")   # from an RGBA image
+```
+
+`magik.channels()` lists the accepted names: `red`, `green`, `blue`, `alpha`,
+and the CMYK roles `cyan`, `magenta`, `yellow`, `black`. Single-letter aliases
+(`"r"`, `"g"`, `"b"`, `"a"`, `"c"`, `"m"`, `"y"`, `"k"`) also work.
+
+The result keeps the source's width and height and is single-channel, so it
+behaves like any other image — readable with `getpixel()`/`pixels()`, savable,
+chainable.
+
+**Validation is not cosmetic.** ImageMagick's channel constants are *positional*
+aliases — `red`, `cyan` and `gray` all mean "the first channel" — so asking for
+the wrong one would otherwise return a plausible but meaningless image. magik
+checks the request against the image's own type first:
+
+```python
+Image.new("L", (4, 4), 128).extract_channel("red")     # MagikOperationError
+Image.new("RGB", (4, 4), (1, 2, 3)).extract_channel("alpha")  # MagikOperationError
+```
+
+Requesting `alpha` from an image without one is an **error, not an empty or
+opaque image** — there is no defensible answer, so magik declines to invent one.
+
+### `has_alpha`
+
+```python
+image.has_alpha    # -> bool
+```
+
+Read from ImageMagick's own alpha state, **not** inferred from `mode`,
+`channels` or the filename. Those cannot be trusted:
+
+| image | `channels` | `has_alpha` |
+|---|---|---|
+| `RGB` | 3 | `False` |
+| `RGBA` | 4 | `True` |
+| `CMYK` | 4 | **`False`** |
+| grayscale+alpha PNG | 2 | `True` |
+
+CMYK is the case that matters: four channels, no alpha. Any implementation
+guessing from the channel count reports `True` there. The property is read-only
+and touches no pixels.
+
+### Depth: three different numbers
+
+magik keeps these apart, and conflating them is the usual source of confusion:
+
+| Name | What it is |
+|---|---|
+| `image.depth` | the image's own storage depth, as ImageMagick reports it |
+| `depth=` on `pixels()`/`getpixel()`/`from_pixels()` | the **transfer** width: 8 or 16 |
+| ImageMagick's `Quantum` | the backend's internal precision — not exposed |
+
+`image.depth` can under-report. An image built with `depth=16` may still report
+`8`, because it reflects the samples' current range rather than how they were
+supplied.
+
+### `convert_depth`
+
+```python
+lower = image.convert_depth(8)
+higher = image.convert_depth(16)
+```
+
+Only 8 and 16 are accepted; anything else raises `MagikFormatError`.
+
+**Widening and narrowing are not symmetric, and this is the important part:**
+
+* **Widening (8 → 16) is free.** Eight-bit samples are exactly representable at
+  sixteen, so `8 → 16 → 8` returns every original sample unchanged.
+* **Narrowing (16 → 8) is irreversible.** It quantises, and the discarded low
+  bits do not come back.
+
+```python
+fine = Image.from_pixels("L", (1, 1), b"\x00\x01", depth=16)  # value 1
+fine.pixels(depth=16)                              # b'\x00\x01'
+fine.convert_depth(8).convert_depth(16).pixels(depth=16)   # b'\x01\x01'  <- not b'\x00\x01'
+```
+
+Increasing the nominal precision therefore only ever *loses* detail deliberately;
+it never recovers what a narrowing discarded.
+
+### What is lossless, and what is not
+
+| Operation | Lossless? |
+|---|---|
+| `has_alpha` | **Yes** — read-only, touches no pixels |
+| `extract_channel` values | **Yes** — the selected channel is exact |
+| `extract_channel` as a whole | **No** — a projection; the other channels are gone |
+| `convert_colorspace` to the space already active | **Yes** — an exact no-op |
+| `convert_depth` 8 → 16 | **Yes** — samples unchanged |
+| `convert_depth` 16 → 8 | **No** — quantised irreversibly |
+| `grayscale()` | **No** — collapses three channels to one |
+| `convert_colorspace` between different spaces | **Usually, but see below** |
+
+#### Colorspace round trips: measured, not promised
+
+Round trips through an *invertible* colorspace were measured to be **bit-exact
+at 8 bits** and **lossy at 16**, on ImageMagick 7.1.2-32 Q16-HDRI:
+
+| Space | 8-bit round trip | 16-bit round trip |
+|---|---|---|
+| `sRGB` (identity) | exact | exact |
+| `HSL` | exact | exact |
+| `YCbCr` | exact | drift ≤ 23 / 65535 |
+| `Lab`, `Luv`, `XYZ` | exact | drift ≤ 89 / 65535 |
+
+Those figures are **observations of one ImageMagick build**, pinned by the test
+suite so a change is noticed. They are not guarantees: a different build or
+version may differ, and the 16-bit bounds in the tests are deliberately far
+looser than what was measured so they survive such a change. Treat colorspace
+conversion as potentially lossy and round in 8-bit if exactness matters.
+
+Collapsing to `Gray` (or any other single channel) is lossy by construction and is
+never reversible — that is a property of the operation, not a defect.
 
 ---
 
@@ -1096,6 +1251,14 @@ Known and intentional at this stage:
   with black the way Pillow does.
 * **`grayscale()` of `RGBA` returns four samples**, not the two that `mode == "LA"`
   implies, because the pixel transfer has no 2-sample gray+alpha layout.
+* **No ICC profile management.** `with_colorspace()` and
+  `convert_colorspace()` move between colorspaces using ImageMagick's built-in
+  transforms; neither embeds, applies or manages ICC profiles, and there is no
+  color-managed rendering pipeline. Colorspaces are interpreted as they are
+  named, not via a profile.
+* **Colorspace round trips are not guaranteed.** They were measured bit-exact at
+  8 bits and lossy at 16 on one ImageMagick build. See
+  [what is lossless](#what-is-lossless-and-what-is-not).
 * **ImageMagick DLLs are not bundled.** The wheel links against MagickWand but
   does not ship it, so ImageMagick 7 must be installed and `MAGICK_HOME` (or the
   loader search path) must resolve it at runtime. On Windows the DLL directories
@@ -1132,10 +1295,11 @@ Roughly, in dependency order:
 2. ~~pixel access and buffer round-tripping~~ (**Stage 02**)
 3. ~~image I/O and format handling~~ (**Stage 03**)
 4. ~~core image operations: resize, crop, rotate, grayscale, blur, flip/flop~~ (**Stage 04**)
-5. compositing, pasting and drawing primitives
-6. multi-frame / animated format support
-7. broadening `image.magick` towards the MagickWand surface
-8. keeping `magik-core` backend-agnostic enough for a second engine
+5. ~~colour spaces, channel extraction, alpha introspection, precision~~ (**Stage 05**)
+6. compositing, pasting and drawing primitives
+7. multi-frame / animated format support
+8. broadening `image.magick` towards the MagickWand surface
+9. keeping `magik-core` backend-agnostic enough for a second engine
 
 ---
 

@@ -27,6 +27,7 @@ use std::ptr::NonNull;
 use std::sync::Once;
 
 use crate as ffi;
+use crate::SizeType;
 
 /// A failure reported by the MagickWand API.
 ///
@@ -605,9 +606,36 @@ impl Wand {
     }
 
     /// Converts the image into another colorspace.
+    ///
+    /// Unlike [`Wand::set_colorspace`], this rewrites the pixel values; it is a
+    /// genuine transform rather than a relabelling.
     pub fn transform_colorspace(&self, colorspace: u32) -> Result<()> {
         // SAFETY: live wand.
         let status = unsafe { ffi::MagickTransformImageColorspace(self.as_ptr(), colorspace) };
+        self.check(status)
+    }
+
+    /// Replaces the image with a single channel.
+    ///
+    /// `channel` is a [`ffi::ChannelType`] bitmask. **The caller is responsible
+    /// for validating that the mask names a channel this image actually has**:
+    /// the ImageMagick constants are positional aliases, so `RED_CHANNEL` and
+    /// `CYAN_CHANNEL` are both `0x0001` and mean "the first channel" rather
+    /// than "red" or "cyan" specifically. Validating here would duplicate policy
+    /// that belongs above this layer.
+    pub fn separate_channel(&self, channel: u32) -> Result<()> {
+        // SAFETY: live wand; `channel` is a plain integer bitmask.
+        let status = unsafe { ffi::MagickSeparateImage(self.as_ptr(), channel) };
+        self.check(status)
+    }
+
+    /// Quantises the image to `depth` bits per sample.
+    ///
+    /// This genuinely discards precision: sample values are requantised to the
+    /// requested depth, so information above it cannot be recovered afterwards.
+    pub fn set_depth(&self, depth: u32) -> Result<()> {
+        // SAFETY: live wand; `depth` is a plain integer.
+        let status = unsafe { ffi::MagickSetImageDepth(self.as_ptr(), depth as SizeType) };
         self.check(status)
     }
 

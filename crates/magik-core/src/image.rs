@@ -54,9 +54,9 @@ use magik_sys::wand::Result as RawResult;
 
 use crate::error::{Error, ErrorKind, Result};
 use crate::magick::{
-    channels_for_image_type, classify, colorspace_from_name, colorspace_name,
-    compression_from_name, compression_name, filter_from_name, image_type_name, MagickVersion,
-    Wand, DEFAULT_FILTER,
+    available_channels, channel_from_name, channels_for_image_type, classify, colorspace_from_name,
+    colorspace_name, compression_from_name, compression_name, filter_from_name, image_type_name,
+    MagickVersion, Wand, DEFAULT_FILTER,
 };
 use crate::pixel::{
     check_coordinate, create_image, export_region, import_region, mode_for_image, parse_color,
@@ -214,6 +214,12 @@ impl Image {
     /// ImageMagick's structural classification, e.g. `"TrueColor"`.
     pub fn image_type(&self) -> &'static str {
         image_type_name(self.lock().image_type())
+    }
+
+    /// The raw ImageMagick `ImageType` value, for callers that need to branch on
+    /// it rather than display it.
+    pub fn image_type_raw(&self) -> u32 {
+        self.lock().image_type()
     }
 
     /// A Pillow-style mode string.
@@ -427,6 +433,120 @@ impl Image {
             ErrorKind::Operation,
             "could not convert image to grayscale",
             |wand| wand.transform_colorspace(sys::GRAY_COLORSPACE),
+        )
+    }
+
+    // -- Stage 05: colorspace, channels, alpha, precision -------------------
+
+    /// Converts the image into the colorspace named `name`, transforming pixels.
+    ///
+    /// This is a **genuine conversion**, not a relabelling. Compare
+    /// [`Image::with_colorspace`], which asks ImageMagick to treat the existing
+    /// sample values as being in a different colorspace without rewriting them.
+    ///
+    /// Concretely, for an `RGB` pixel of `(0, 0, 200)`:
+    ///
+    /// * `convert_colorspace("Gray")` recomputes the luminance, giving `14`
+    ///   (`0.2126*0 + 0.7152*0 + 0.0722*200`);
+    /// * `with_colorspace("Gray")` leaves the samples untouched, so reading the
+    ///   image back yields `0` - the red channel, not a luminance.
+    ///
+    /// `name` is resolved with the same case-insensitive table used by
+    /// [`Image::with_colorspace`] and [`crate::magick::colorspaces`], so
+    /// `"Gray"`, `"grey"` and `"l"` all work. An unknown name raises
+    /// [`ErrorKind::Format`].
+    ///
+    /// Dimensions are preserved. Alpha survives when the destination colorspace
+    /// can represent it, because the underlying transform carries the alpha
+    /// channel across rather than flattening it.
+    pub fn convert_colorspace(&self, name: &str) -> Result<Self> {
+        let value = colorspace_from_name(name)
+            .ok_or_else(|| Error::format(format!("unknown colorspace {name:?}")))?;
+        self.derive(
+            ErrorKind::Operation,
+            format!(
+                "could not convert image to the {} colorspace",
+                colorspace_name(value)
+            ),
+            |wand| wand.transform_colorspace(value),
+        )
+    }
+
+    /// Extracts a single channel as a new grayscale image.
+    ///
+    /// `name` is one of the names returned by [`crate::magick::channel_names`]:
+    /// `red`, `green`, `blue`, `alpha`, and the CMYK roles `cyan`, `magenta`,
+    /// `yellow`, `black`.
+    ///
+    /// The result keeps the source's width and height and is single-channel, so
+    /// it can be read with `pixels()`/`getpixel()` and saved like any other
+    /// image.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Format`] for an unrecognised channel name, and
+    /// [`ErrorKind::Operation`] when the name is a real channel but this image
+    /// has no such channel - asking a grayscale image for `"red"`, or an RGB
+    /// image for `"cyan"`. ImageMagick's channel constants are *positional*
+    /// aliases (`red`, `cyan` and `gray` all mean "the first channel"), so
+    /// without this check the wrong request would silently return a plausible
+    /// but meaningless image.
+    pub fn extract_channel(&self, name: &str) -> Result<Self> {
+        let mask = channel_from_name(name)
+            .ok_or_else(|| Error::format(format!("unknown channel {name:?}")))?;
+
+        let available = available_channels(self.image_type_raw());
+        if !available.iter().any(|c| c.eq_ignore_ascii_case(name)) {
+            let kind = if available.is_empty() {
+                "this image type has no separable channels".to_string()
+            } else {
+                format!("available channels are {}", available.join(", "))
+            };
+            return Err(Error::operation(format!(
+                "cannot extract channel {name:?}: {kind}"
+            )));
+        }
+
+        self.derive(
+            ErrorKind::Operation,
+            format!("could not extract the {name} channel"),
+            |wand| wand.separate_channel(mask),
+        )
+    }
+
+    /// Whether the image carries an alpha channel.
+    ///
+    /// Read from ImageMagick's own alpha state rather than inferred from
+    /// `mode`, `channels` or the filename. Those cannot be trusted: a CMYK image
+    /// has four channels but no alpha, and a `PaletteAlpha` PNG reports two.
+    pub fn has_alpha(&self) -> bool {
+        self.lock().has_alpha()
+    }
+
+    /// Quantises the image to `bits` bits per sample.
+    ///
+    /// Only 8 and 16 are accepted, matching what magik's pixel-transfer APIs
+    /// support; anything else raises [`ErrorKind::Format`].
+    ///
+    /// **Reducing the depth discards information.** Converting a 16-bit image to
+    /// 8 bits quantises every sample, and converting it back to 16 does not
+    /// restore the discarded precision - the low byte is filled from the
+    /// quantised value, not from the original. Increasing the depth is therefore
+    /// a way to *lose* detail deliberately, never a way to recover it.
+    ///
+    /// Note this is the image's storage depth. It is independent of the depth
+    /// argument accepted by [`Image::pixels`] and friends; see
+    /// [`SampleDepth`] for that distinction.
+    pub fn convert_depth(&self, bits: u32) -> Result<Self> {
+        if bits != 8 && bits != 16 {
+            return Err(Error::format(format!(
+                "unsupported depth {bits}: magik supports 8 and 16 bits per sample"
+            )));
+        }
+        self.derive(
+            ErrorKind::Operation,
+            format!("could not convert image to {bits}-bit depth"),
+            |wand| wand.set_depth(bits),
         )
     }
 
