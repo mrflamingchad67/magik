@@ -246,7 +246,9 @@ jobs:
       - name: Create the virtual environment
         run: |
           python -m venv .venv
-          ".venv\Scripts\python.exe" -m pip install --upgrade pip
+          # PowerShell needs the call operator `&` to run a quoted path;
+          # without it a quoted string followed by `-m` is a parse error.
+          & ".\.venv\Scripts\python.exe" -m pip install --upgrade pip
 
       - name: Cache cargo artifacts
         uses: actions/cache@v4
