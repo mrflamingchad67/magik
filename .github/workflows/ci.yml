@@ -100,9 +100,17 @@ jobs:
             # four failed CI runs came from exactly that. Extraction takes the
             # whole payload, and it is what Scoop does (innosetup: true in the
             # imagemagick manifest), which is why a Scoop install does have them.
-            $tool = Join-Path $env:RUNNER_TEMP 'innoextract.exe'
-            Invoke-WebRequest -Uri $env:INNOEXTRACT_URL -OutFile "$tool.zip" -UseBasicParsing
-            Expand-Archive "$tool.zip" -DestinationPath "$env:RUNNER_TEMP\ie" -Force
+            # Expand-Archive preserves the archive's own directory layout, so the
+            # binary is not necessarily at the root of the destination. Locating
+            # it by search avoids depending on the zip's internal structure.
+            $toolDir = Join-Path $env:RUNNER_TEMP 'ie'
+            $zip     = Join-Path $env:RUNNER_TEMP 'innoextract.zip'
+            Invoke-WebRequest -Uri $env:INNOEXTRACT_URL -OutFile $zip -UseBasicParsing
+            Expand-Archive $zip -DestinationPath $toolDir -Force
+            $tool = (Get-ChildItem $toolDir -Recurse -Filter 'innoextract.exe' |
+                     Select-Object -First 1).FullName
+            if (-not $tool) { throw "innoextract.exe not found inside the downloaded archive" }
+            Write-Host "  innoextract: $tool"
             $dest = Join-Path $env:RUNNER_TEMP 'imagemagick'
             & $tool --extract --output-dir $dest --silent $installer
             if ($LASTEXITCODE -ne 0) { throw "innoextract failed with exit code $LASTEXITCODE" }
@@ -204,9 +212,16 @@ jobs:
 
             # Extract, not install: the import library is in a non-default
             # installer component that a silent install skips. See the rust job.
-            $tool = Join-Path $env:RUNNER_TEMP 'innoextract.exe'
-            Invoke-WebRequest -Uri $env:INNOEXTRACT_URL -OutFile "$tool.zip" -UseBasicParsing
-            Expand-Archive "$tool.zip" -DestinationPath "$env:RUNNER_TEMP\ie" -Force
+            # See the rust job: Expand-Archive preserves the archive's own layout, so
+            # the binary is located by search rather than assumed to be at the root.
+            $toolDir = Join-Path $env:RUNNER_TEMP 'ie'
+            $zip     = Join-Path $env:RUNNER_TEMP 'innoextract.zip'
+            Invoke-WebRequest -Uri $env:INNOEXTRACT_URL -OutFile $zip -UseBasicParsing
+            Expand-Archive $zip -DestinationPath $toolDir -Force
+            $tool = (Get-ChildItem $toolDir -Recurse -Filter 'innoextract.exe' |
+                     Select-Object -First 1).FullName
+            if (-not $tool) { throw "innoextract.exe not found inside the downloaded archive" }
+            Write-Host "  innoextract: $tool"
             $dest = Join-Path $env:RUNNER_TEMP 'imagemagick'
             & $tool --extract --output-dir $dest --silent $installer
             if ($LASTEXITCODE -ne 0) { throw "innoextract failed with exit code $LASTEXITCODE" }
