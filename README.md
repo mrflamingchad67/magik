@@ -173,12 +173,16 @@ At install time, `magik-sys/build.rs` locates ImageMagick by searching, in order
 2. Scoop (`%USERPROFILE%\scoop\apps\imagemagick\current`), newest version first;
 3. Chocolatey and `C:\Program Files\ImageMagick-*`.
 
-**magik currently builds and is tested on Windows only.** `build.rs` looks for the
-MagickWand import libraries under their Windows names (`CORE_RL_MagickWand_`).
+**magik currently builds and is tested on Windows only.** `build.rs` resolves the
+MagickWand import libraries by their Windows names (`CORE_RL_MagickWand_`).
 ImageMagick's Linux packages name them differently (`libMagickWand-7.Q16HDRI.so`),
 so a Unix build fails at link time even though `/usr` and Homebrew prefixes are
 searched. Supporting Unix means teaching `build.rs` to drive `pkg-config`; that
 has not been done, and CI reflects this by running on `windows-latest`.
+
+ImageMagick's *headers* are not needed. `magik-sys` declares each FFI function by
+hand and includes no header, so the only link-time requirement is the import
+libraries above; the `cargo:include=` that `build.rs` emits is currently unused.
 
 Set `MAGICK_HOME` explicitly if you have several installations:
 
@@ -251,11 +255,19 @@ CI's.
   each building the extension, running `pytest`, then building a wheel and
   re-running the suite against that wheel in a clean virtual environment.
 
-CI runs on **Windows** by necessity, not preference: `magik-sys` links the
-MagickWand import libraries under their Windows names (`CORE_RL_MagickWand_`),
-whereas ImageMagick's Linux packages use a different naming scheme. Supporting
-Linux would mean extending `build.rs` to use `pkg-config`; that is a separate
-piece of work, not a runner swap.
+Both jobs first locate ImageMagick's **MagickWand import library**
+(`lib\CORE_RL_MagickWand_.lib`), using whatever the runner image provides and
+falling back to a pinned download of ImageMagick 7.1.2-32 when it is absent, then
+exporting `MAGICK_HOME`.
+
+Headers are *not* required: `magik-sys` declares every FFI function by hand and
+includes no ImageMagick header, so only the import libraries matter. The
+`cargo:include=` that `build.rs` still emits is unused.
+
+CI runs on **Windows** by necessity, not preference: those import libraries carry
+their Windows names, whereas ImageMagick's Linux packages name them differently.
+Supporting Linux would mean extending `build.rs` to use `pkg-config`; that is a
+separate piece of work, not a runner swap.
 
 ---
 

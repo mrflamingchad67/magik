@@ -28,6 +28,11 @@ env:
   CARGO_TERM_COLOR: always
   # Keep the build honest and reproducible.
   RUSTFLAGS: -D warnings
+  # Pinned ImageMagick, matching the version this project is developed against.
+  # Headers are NOT required (magik-sys hand-declares all FFI); the link step
+  # needs the MagickWand import libraries, which the Chocolatey package omits.
+  IM_VERSION: '7.1.2-32'
+  IM_ARCHIVE: 'ImageMagick-7.1.2-32-Q16-HDRI-x64-dll.exe'
 
 jobs:
   rust:
@@ -47,27 +52,40 @@ jobs:
           cargo fmt --version
           cargo clippy --version
 
-      - name: Install ImageMagick
+      - name: Locate ImageMagick link libraries
         shell: pwsh
         run: |
-          # The runner image ships the ImageMagick *client* on PATH, but
-          # `magik-sys/build.rs` links the MagickWand import libraries and so
-          # needs the SDK: headers under `include`, import libraries under `lib`.
-          # Install the full package and export MAGICK_HOME, which is the
-          # override build.rs reads first.
-          choco install imagemagick --yes --no-progress
-          $prefix = Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' |
-                    Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $prefix) { throw "ImageMagick prefix not found after install" }
-          "MAGICK_HOME=$($prefix.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
-          $env:MAGICK_HOME = $prefix.FullName
+          # What the build actually needs is the MagickWand *import library*.
+          # `magik-sys` declares every FFI function by hand and includes no
+          # header, so headers are irrelevant; build.rs still emits
+          # `cargo:include=` but nothing consumes it. So the only requirement is
+          # lib\CORE_RL_MagickWand_.lib plus its MagickCore partner.
+          $found = Get-ChildItem -Path 'C:\Program Files','C:\ProgramData\chocolatey\lib' `
+                                   -Filter 'CORE_RL_MagickWand_.lib' -Recurse -ErrorAction SilentlyContinue |
+                  Select-Object -First 1
+          if (-not $found) {
+            Write-Host "No import library on the runner image; installing ImageMagick $env:IM_VERSION."
+            $installer = Join-Path $env:RUNNER_TEMP 'imagemagick.exe'
+            # Pinned so the build is reproducible: a floating download would let
+            # an upstream release change the result under us.
+            Invoke-WebRequest -Uri "https://download.imagemagick.org/archive/binaries/$env:IM_ARCHIVE" `
+                              -OutFile $installer -UseBasicParsing
+            # Inno Setup installer; /VERYSILENT runs it with no UI.
+            $target = Join-Path $env:RUNNER_TEMP 'ImageMagick'
+            Start-Process -FilePath $installer -Wait -NoNewWindow `
+              -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target"
+            $found = Get-ChildItem -Path $target -Filter 'CORE_RL_MagickWand_.lib' -Recurse `
+                                    -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $found) {
+            throw "Could not find CORE_RL_MagickWand_.lib; magik-sys cannot link MagickWand."
+          }
+          # build.rs wants the *prefix*, which is two levels above lib/.
+          $prefix = Split-Path (Split-Path $found.FullName -Parent) -Parent
+          "MAGICK_HOME=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $env:MAGICK_HOME = $prefix
+          Write-Host "MAGICK_HOME=$prefix"
           magick -version
-          if (-not (Test-Path (Join-Path $prefix.FullName 'include\MagickWand'))) {
-            throw "MagickWand headers are missing - the SDK did not install"
-          }
-          if (-not (Test-Path (Join-Path $prefix.FullName 'lib'))) {
-            throw "ImageMagick lib directory is missing"
-          }
 
       - name: Cache cargo artifacts
         uses: actions/cache@v4
@@ -124,16 +142,31 @@ jobs:
       - name: Report the toolchain
         run: rustc --version && cargo --version
 
-      - name: Install ImageMagick
+      - name: Locate ImageMagick link libraries
         shell: pwsh
         run: |
-          # Same requirement as the rust job: the SDK, not just the client.
-          choco install imagemagick --yes --no-progress
-          $prefix = Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' |
-                    Sort-Object Name -Descending | Select-Object -First 1
-          if (-not $prefix) { throw "ImageMagick prefix not found after install" }
-          "MAGICK_HOME=$($prefix.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
-          $env:MAGICK_HOME = $prefix.FullName
+          # Identical logic to the rust job; the image is not shared between
+          # jobs, so the runner starts without the library here too.
+          $found = Get-ChildItem -Path 'C:\Program Files','C:\ProgramData\chocolatey\lib' `
+                                   -Filter 'CORE_RL_MagickWand_.lib' -Recurse -ErrorAction SilentlyContinue |
+                  Select-Object -First 1
+          if (-not $found) {
+            $installer = Join-Path $env:RUNNER_TEMP 'imagemagick.exe'
+            Invoke-WebRequest -Uri "https://download.imagemagick.org/archive/binaries/$env:IM_ARCHIVE" `
+                              -OutFile $installer -UseBasicParsing
+            $target = Join-Path $env:RUNNER_TEMP 'ImageMagick'
+            Start-Process -FilePath $installer -Wait -NoNewWindow `
+              -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target"
+            $found = Get-ChildItem -Path $target -Filter 'CORE_RL_MagickWand_.lib' -Recurse `
+                                    -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $found) {
+            throw "Could not find CORE_RL_MagickWand_.lib; magik-sys cannot link MagickWand."
+          }
+          $prefix = Split-Path (Split-Path $found.FullName -Parent) -Parent
+          "MAGICK_HOME=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $env:MAGICK_HOME = $prefix
+          Write-Host "MAGICK_HOME=$prefix"
           magick -version
 
       # `maturin develop` refuses to run outside an activated environment, so a
