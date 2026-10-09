@@ -8,11 +8,15 @@ version = "0.1.0"
 description = "A Pillow-inspired Python image API backed by ImageMagick/MagickWand through a Rust core"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Multimedia :: Graphics :: Graphics Conversion",
     "License :: OSI Approved :: MIT License",
 ]
@@ -33,4 +37,4 @@ filterwarnings = ["error::DeprecationWarning:magik.*"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py311"

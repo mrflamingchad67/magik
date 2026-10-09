@@ -144,7 +144,7 @@ rewriting the Python API. The layering is arranged so that:
 
 ## Requirements
 
-* **Python** 3.9+
+* **Python** 3.11+
 * **Rust** stable (developed against 1.99)
 * **ImageMagick 7** with **MagickWand** development files (headers + import
   libraries)
@@ -251,9 +251,13 @@ CI's.
 
 * **`rust`** — formatting, `clippy -D warnings`, a release build, the workspace
   test suite, and a grep that fails if any `unsafe` appears outside `magik-sys`.
-* **`python`** — Python 3.9 (the floor declared in `pyproject.toml`) and 3.12,
-  each building the extension, running `pytest`, then building a wheel and
-  re-running the suite against that wheel in a clean virtual environment.
+* **`python`** — Python 3.11 (the floor declared in `pyproject.toml`) and 3.14
+  (current), each building the extension, running `pytest`, then building a wheel
+  and re-running the suite against that wheel in a clean virtual environment.
+
+Testing both ends of the range is deliberate: 3.9 stayed declared as the floor
+here for a year after it reached end of life, because nothing in CI asserted
+otherwise.
 
 Both jobs first locate ImageMagick's **MagickWand import library**
 (`lib\CORE_RL_MagickWand_.lib`), using whatever the runner image provides and

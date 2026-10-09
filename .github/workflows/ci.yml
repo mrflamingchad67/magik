@@ -55,36 +55,62 @@ jobs:
       - name: Locate ImageMagick link libraries
         shell: pwsh
         run: |
-          # What the build actually needs is the MagickWand *import library*.
-          # `magik-sys` declares every FFI function by hand and includes no
-          # header, so headers are irrelevant; build.rs still emits
-          # `cargo:include=` but nothing consumes it. So the only requirement is
-          # lib\CORE_RL_MagickWand_.lib plus its MagickCore partner.
-          $found = Get-ChildItem -Path 'C:\Program Files','C:\ProgramData\chocolatey\lib' `
-                                   -Filter 'CORE_RL_MagickWand_.lib' -Recurse -ErrorAction SilentlyContinue |
-                  Select-Object -First 1
+          # The build needs the MagickWand *import library*
+          # (lib\CORE_RL_MagickWand_.lib). Headers are irrelevant: magik-sys
+          # hand-declares every FFI function and includes no ImageMagick header,
+          # so the cargo:include= that build.rs emits is unused.
+          #
+          # Specific sub-paths are checked rather than a recursive scan, which
+          # took over two minutes across C:\Program Files.
+          $candidates = @(
+            "$env:ProgramData\chocolatey\lib\imagemagick\tools",
+            "$env:ProgramData\chocolatey\lib\imagemagick",
+            "C:\Program Files\ImageMagick-7.1.2-Q16-HDRI",
+            "C:\ImageMagick"
+          ) + (Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' -EA SilentlyContinue |
+               ForEach-Object { $_.FullName })
+
+          foreach ($root in $candidates | Select-Object -Unique) {
+            if (-not (Test-Path $root)) { continue }
+            $libs = Get-ChildItem (Join-Path $root 'lib') -Filter 'CORE_RL_*.lib' -EA SilentlyContinue
+            Write-Host ("  {0}: {1}" -f $root, ($libs.Name -join ', '))
+          }
+
+          $found = $null
+          foreach ($root in $candidates | Select-Object -Unique) {
+            $hit = Join-Path $root 'lib\CORE_RL_MagickWand_.lib'
+            if (Test-Path $hit) { $found = $root; break }
+          }
+
           if (-not $found) {
-            Write-Host "No import library on the runner image; installing ImageMagick $env:IM_VERSION."
+            Write-Host "No MagickWand import library found; installing $env:IM_ARCHIVE"
             $installer = Join-Path $env:RUNNER_TEMP 'imagemagick.exe'
-            # Pinned so the build is reproducible: a floating download would let
-            # an upstream release change the result under us.
             Invoke-WebRequest -Uri "https://download.imagemagick.org/archive/binaries/$env:IM_ARCHIVE" `
                               -OutFile $installer -UseBasicParsing
-            # Inno Setup installer; /VERYSILENT runs it with no UI.
+            Write-Host ("  downloaded {0:N1} MB" -f ((Get-Item $installer).Length / 1MB))
+
             $target = Join-Path $env:RUNNER_TEMP 'ImageMagick'
-            Start-Process -FilePath $installer -Wait -NoNewWindow `
-              -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target"
-            $found = Get-ChildItem -Path $target -Filter 'CORE_RL_MagickWand_.lib' -Recurse `
-                                    -ErrorAction SilentlyContinue | Select-Object -First 1
+            $log     = Join-Path $env:RUNNER_TEMP 'imagemagick-install.log'
+            # Inno Setup installer. /DIR must stay quoted: an unquoted path with
+            # a space makes Inno fall back to its default location.
+            $proc = Start-Process -FilePath $installer -Wait -PassThru -NoNewWindow `
+              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',
+                            "/DIR=`"$target`"", "/LOG=`"$log`""
+            Write-Host "  installer exit code: $($proc.ExitCode)"
+            if (Test-Path $log) { Get-Content $log -Tail 15 | ForEach-Object { Write-Host "  [inno] $_" } }
+            Write-Host "  installed tree:"
+            Get-ChildItem $target -Recurse -Filter '*.lib' -EA SilentlyContinue |
+              Select-Object -First 10 | ForEach-Object { Write-Host "    $($_.FullName)" }
+
+            if (Test-Path (Join-Path $target 'lib\CORE_RL_MagickWand_.lib')) { $found = $target }
           }
+
           if (-not $found) {
-            throw "Could not find CORE_RL_MagickWand_.lib; magik-sys cannot link MagickWand."
+            throw "No CORE_RL_MagickWand_.lib anywhere on this runner; magik-sys cannot link MagickWand."
           }
-          # build.rs wants the *prefix*, which is two levels above lib/.
-          $prefix = Split-Path (Split-Path $found.FullName -Parent) -Parent
-          "MAGICK_HOME=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
-          $env:MAGICK_HOME = $prefix
-          Write-Host "MAGICK_HOME=$prefix"
+          "MAGICK_HOME=$found" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $env:MAGICK_HOME = $found
+          Write-Host "MAGICK_HOME=$found"
           magick -version
 
       - name: Cache cargo artifacts
@@ -128,9 +154,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 is the floor declared in pyproject.toml, so it is the one worth
-        # proving; 3.12 is a modern LTS-ish interpreter.
-        python-version: ['3.9', '3.12']
+        # 3.11 is the floor declared in pyproject.toml and reaches end of life
+        # in Oct 2027; 3.14 is the current release and the interpreter this
+        # project is developed against. Testing both ends catches a declared
+        # support claim going stale, which is how 3.9 lingered here after it
+        # reached EOL.
+        python-version: ['3.11', '3.14']
     steps:
       - uses: actions/checkout@v4
 
@@ -145,28 +174,42 @@ jobs:
       - name: Locate ImageMagick link libraries
         shell: pwsh
         run: |
-          # Identical logic to the rust job; the image is not shared between
-          # jobs, so the runner starts without the library here too.
-          $found = Get-ChildItem -Path 'C:\Program Files','C:\ProgramData\chocolatey\lib' `
-                                   -Filter 'CORE_RL_MagickWand_.lib' -Recurse -ErrorAction SilentlyContinue |
-                  Select-Object -First 1
+          # Same logic as the rust job; runner images are not shared between
+          # jobs, so each one starts from the same state.
+          $candidates = @(
+            "$env:ProgramData\chocolatey\lib\imagemagick\tools",
+            "$env:ProgramData\chocolatey\lib\imagemagick",
+            "C:\Program Files\ImageMagick-7.1.2-Q16-HDRI",
+            "C:\ImageMagick"
+          ) + (Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' -EA SilentlyContinue |
+               ForEach-Object { $_.FullName })
+
+          $found = $null
+          foreach ($root in $candidates | Select-Object -Unique) {
+            if (Test-Path (Join-Path $root 'lib\CORE_RL_MagickWand_.lib')) { $found = $root; break }
+          }
           if (-not $found) {
             $installer = Join-Path $env:RUNNER_TEMP 'imagemagick.exe'
             Invoke-WebRequest -Uri "https://download.imagemagick.org/archive/binaries/$env:IM_ARCHIVE" `
                               -OutFile $installer -UseBasicParsing
+            Write-Host ("  downloaded {0:N1} MB" -f ((Get-Item $installer).Length / 1MB))
             $target = Join-Path $env:RUNNER_TEMP 'ImageMagick'
-            Start-Process -FilePath $installer -Wait -NoNewWindow `
-              -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target"
-            $found = Get-ChildItem -Path $target -Filter 'CORE_RL_MagickWand_.lib' -Recurse `
-                                    -ErrorAction SilentlyContinue | Select-Object -First 1
+            $log     = Join-Path $env:RUNNER_TEMP 'imagemagick-install.log'
+            $proc = Start-Process -FilePath $installer -Wait -PassThru -NoNewWindow `
+              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',
+                            "/DIR=`"$target`"", "/LOG=`"$log`""
+            Write-Host "  installer exit code: $($proc.ExitCode)"
+            if (Test-Path $log) { Get-Content $log -Tail 15 | ForEach-Object { Write-Host "  [inno] $_" } }
+            Get-ChildItem $target -Recurse -Filter '*.lib' -EA SilentlyContinue |
+              Select-Object -First 10 | ForEach-Object { Write-Host "    $($_.FullName)" }
+            if (Test-Path (Join-Path $target 'lib\CORE_RL_MagickWand_.lib')) { $found = $target }
           }
           if (-not $found) {
-            throw "Could not find CORE_RL_MagickWand_.lib; magik-sys cannot link MagickWand."
+            throw "No CORE_RL_MagickWand_.lib anywhere on this runner; magik-sys cannot link MagickWand."
           }
-          $prefix = Split-Path (Split-Path $found.FullName -Parent) -Parent
-          "MAGICK_HOME=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append
-          $env:MAGICK_HOME = $prefix
-          Write-Host "MAGICK_HOME=$prefix"
+          "MAGICK_HOME=$found" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $env:MAGICK_HOME = $found
+          Write-Host "MAGICK_HOME=$found"
           magick -version
 
       # `maturin develop` refuses to run outside an activated environment, so a
