@@ -171,8 +171,14 @@ At install time, `magik-sys/build.rs` locates ImageMagick by searching, in order
 
 1. the `MAGICK_HOME` environment variable;
 2. Scoop (`%USERPROFILE%\scoop\apps\imagemagick\current`), newest version first;
-3. Chocolatey and `C:\Program Files\ImageMagick-*`;
-4. Homebrew and common Linux prefixes (`/opt/homebrew`, `/usr/local`, `/usr`).
+3. Chocolatey and `C:\Program Files\ImageMagick-*`.
+
+**magik currently builds and is tested on Windows only.** `build.rs` looks for the
+MagickWand import libraries under their Windows names (`CORE_RL_MagickWand_`).
+ImageMagick's Linux packages name them differently (`libMagickWand-7.Q16HDRI.so`),
+so a Unix build fails at link time even though `/usr` and Homebrew prefixes are
+searched. Supporting Unix means teaching `build.rs` to drive `pkg-config`; that
+has not been done, and CI reflects this by running on `windows-latest`.
 
 Set `MAGICK_HOME` explicitly if you have several installations:
 
@@ -217,6 +223,39 @@ pip install target/wheels/magik-*.whl
 ```
 
 Requires a virtual environment or conda environment (maturin's requirement).
+
+### Toolchain
+
+The Rust toolchain is pinned by `rust-toolchain.toml` to the stable channel with
+the `rustfmt` and `clippy` components. Installing [rustup](https://rustup.rs) is
+enough — any cargo invocation from the repository root fetches whatever the pin
+names:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+The pin exists so that a nightly rustup bump cannot turn a build red for reasons
+unrelated to the code, and so a contributor's `cargo fmt` behaves exactly like
+CI's.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request against `main`:
+
+* **`rust`** — formatting, `clippy -D warnings`, a release build, the workspace
+  test suite, and a grep that fails if any `unsafe` appears outside `magik-sys`.
+* **`python`** — Python 3.9 (the floor declared in `pyproject.toml`) and 3.12,
+  each building the extension, running `pytest`, then building a wheel and
+  re-running the suite against that wheel in a clean virtual environment.
+
+CI runs on **Windows** by necessity, not preference: `magik-sys` links the
+MagickWand import libraries under their Windows names (`CORE_RL_MagickWand_`),
+whereas ImageMagick's Linux packages use a different naming scheme. Supporting
+Linux would mean extending `build.rs` to use `pkg-config`; that is a separate
+piece of work, not a runner swap.
 
 ---
 

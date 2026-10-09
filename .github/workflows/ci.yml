@@ -47,8 +47,27 @@ jobs:
           cargo fmt --version
           cargo clippy --version
 
-      - name: Report ImageMagick
-        run: magick -version
+      - name: Install ImageMagick
+        shell: pwsh
+        run: |
+          # The runner image ships the ImageMagick *client* on PATH, but
+          # `magik-sys/build.rs` links the MagickWand import libraries and so
+          # needs the SDK: headers under `include`, import libraries under `lib`.
+          # Install the full package and export MAGICK_HOME, which is the
+          # override build.rs reads first.
+          choco install imagemagick --yes --no-progress
+          $prefix = Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' |
+                    Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $prefix) { throw "ImageMagick prefix not found after install" }
+          "MAGICK_HOME=$($prefix.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $env:MAGICK_HOME = $prefix.FullName
+          magick -version
+          if (-not (Test-Path (Join-Path $prefix.FullName 'include\MagickWand'))) {
+            throw "MagickWand headers are missing - the SDK did not install"
+          }
+          if (-not (Test-Path (Join-Path $prefix.FullName 'lib'))) {
+            throw "ImageMagick lib directory is missing"
+          }
 
       - name: Cache cargo artifacts
         uses: actions/cache@v4
@@ -105,8 +124,26 @@ jobs:
       - name: Report the toolchain
         run: rustc --version && cargo --version
 
-      - name: Report ImageMagick
-        run: magick -version
+      - name: Install ImageMagick
+        shell: pwsh
+        run: |
+          # Same requirement as the rust job: the SDK, not just the client.
+          choco install imagemagick --yes --no-progress
+          $prefix = Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' |
+                    Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $prefix) { throw "ImageMagick prefix not found after install" }
+          "MAGICK_HOME=$($prefix.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $env:MAGICK_HOME = $prefix.FullName
+          magick -version
+
+      # `maturin develop` refuses to run outside an activated environment, so a
+      # venv is created explicitly rather than relying on the runner's
+      # preinstalled interpreter. Its path goes into GITHUB_PATH so every later
+      # `python` is the venv one.
+      - name: Create the virtual environment
+        run: |
+          python -m venv .venv
+          ".venv\Scripts\python.exe" -m pip install --upgrade pip
 
       - name: Cache cargo artifacts
         uses: actions/cache@v4
@@ -118,13 +155,18 @@ jobs:
           key: ${{ runner.os }}-cargo-py${{ matrix.python-version }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-py${{ matrix.python-version }}-
 
+      # maturin and pytest are dev tooling only; the extension itself has no
+      # runtime Python dependencies.
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip maturin pytest
+        run: python -m pip install maturin pytest
 
       # `maturin develop` builds the extension into the active interpreter, which
       # is how the project is tested locally.
       - name: Build and install the extension
         run: python -m maturin develop --release
+
+      - name: Report the ImageMagick that was linked against
+        run: python -c "import magik; print(magik.version())"
 
       - name: Run the Python test suite
         run: python -m pytest -q
@@ -137,13 +179,16 @@ jobs:
       - name: Install the wheel into a clean environment and retest
         shell: pwsh
         run: |
+          # A separate interpreter, so the wheel is proven installable rather
+          # than merely shadowed by the editable build above.
           python -m venv .wheeltest
           $python = ".\.wheeltest\Scripts\python.exe"
           $wheel = (Get-ChildItem target\wheels\*.whl | Select-Object -First 1).FullName
+          if (-not $wheel) { throw "no wheel was produced" }
           & $python -m pip install --upgrade pip
           & $python -m pip install $wheel
           & $python -m pip install pytest
-          # A belt-and-braces check that the import really came from the wheel
-          # rather than from the source tree sitting in the checkout.
-          & $python -c "import magik; assert 'wheeltest' in magik.__file__, magik.__file__"
+          # Prove the import came from site-packages and not the checkout, which
+          # sits one directory up and would otherwise be found first.
+          & $python -c "import magik, sys; assert 'wheeltest' in magik.__file__, magik.__file__; print(magik.__file__)"
           & $python -m pytest tests -q
