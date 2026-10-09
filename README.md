@@ -264,6 +264,14 @@ Both jobs first locate ImageMagick's **MagickWand import library**
 falling back to a pinned download of ImageMagick 7.1.2-32 when it is absent, then
 exporting `MAGICK_HOME`.
 
+When it has to download, CI **extracts** the installer with
+[innoextract](https://github.com/dscharrer/innoextract) rather than running it.
+That is not a preference: the import library lives in a non-default installer
+component, so a silent install exits 0 and reports "Installation process
+succeeded" while leaving no import libraries behind. Extraction takes the whole
+payload. Scoop does the same thing, which is why a Scoop install has the
+libraries and an installed one does not.
+
 Headers are *not* required: `magik-sys` declares every FFI function by hand and
 includes no ImageMagick header, so only the import libraries matter. The
 `cargo:include=` that `build.rs` still emits is unused.

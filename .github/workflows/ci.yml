@@ -35,6 +35,10 @@ env:
   # verified to contain lib\CORE_RL_MagickWand_.lib.
   IM_VERSION: '7.1.2-32'
   IM_URL: 'https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-32/ImageMagick-7.1.2-32-Q16-HDRI-x64-dll.exe'
+  # Used to *extract* the ImageMagick installer, never to run it: a silent
+  # install skips the component holding the import libraries. Pinned to a
+  # release rather than "latest" so the runner cannot drift under us.
+  INNOEXTRACT_URL: 'https://github.com/dscharrer/innoextract/releases/download/1.9/innoextract-1.9-windows.zip'
 
 jobs:
   rust:
@@ -85,35 +89,28 @@ jobs:
           }
 
           if (-not $found) {
-            Write-Host "No MagickWand import library found; installing $env:IM_VERSION"
+            Write-Host "No MagickWand import library found; extracting $env:IM_VERSION"
             $installer = Join-Path $env:RUNNER_TEMP 'imagemagick.exe'
-            Invoke-WebRequest -Uri $env:IM_URL `
-                              -OutFile $installer -UseBasicParsing
+            Invoke-WebRequest -Uri $env:IM_URL -OutFile $installer -UseBasicParsing
             Write-Host ("  downloaded {0:N1} MB" -f ((Get-Item $installer).Length / 1MB))
 
-            $target = Join-Path $env:RUNNER_TEMP 'ImageMagick'
-            $log    = Join-Path $env:RUNNER_TEMP 'imagemagick-install.log'
-            # No /DIR: this installer ignores it and installs to its default
-            # location under C:\Program Files.
-            $proc = Start-Process -FilePath $installer -Wait -PassThru -NoNewWindow `
-              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART', "/LOG=`"$log`""
-            Write-Host "  installer exit code: $($proc.ExitCode)"
-            if (Test-Path $log) { Get-Content $log -Tail 12 | ForEach-Object { Write-Host "  [inno] $_" } }
+            # Extract rather than install. The import library sits in a
+            # non-default installer component, so a silent install exits 0, logs
+            # "Installation process succeeded", and still leaves no .lib behind -
+            # four failed CI runs came from exactly that. Extraction takes the
+            # whole payload, and it is what Scoop does (innosetup: true in the
+            # imagemagick manifest), which is why a Scoop install does have them.
+            $tool = Join-Path $env:RUNNER_TEMP 'innoextract.exe'
+            Invoke-WebRequest -Uri $env:INNOEXTRACT_URL -OutFile "$tool.zip" -UseBasicParsing
+            Expand-Archive "$tool.zip" -DestinationPath "$env:RUNNER_TEMP\ie" -Force
+            $dest = Join-Path $env:RUNNER_TEMP 'imagemagick'
+            & $tool --extract --output-dir $dest --silent $installer
+            if ($LASTEXITCODE -ne 0) { throw "innoextract failed with exit code $LASTEXITCODE" }
 
-            # Re-evaluate every candidate rather than trusting $target: the
-            # installer uses its own default location, and checking only $target
-            # reported "not found" even when the install had succeeded.
-            $found = $null
-            foreach ($root in ($candidates + @($target) +
-                               (Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' -EA SilentlyContinue |
-                                ForEach-Object { $_.FullName })) | Select-Object -Unique) {
-              if (Test-Path (Join-Path $root 'lib\CORE_RL_MagickWand_.lib')) { $found = $root; break }
-            }
-            Write-Host "  installed tree:"
-            foreach ($root in (@($target) + (Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' -EA SilentlyContinue |
-                              ForEach-Object { $_.FullName })) | Select-Object -Unique) {
-              $libs = Get-ChildItem (Join-Path $root 'lib') -Filter 'CORE_RL_*.lib' -EA SilentlyContinue
-              if ($libs) { Write-Host ("    {0}: {1}" -f $root, ($libs.Name -join ', ')) }
+            $found = Join-Path $dest 'app'
+            if (-not (Test-Path (Join-Path $found 'lib\CORE_RL_MagickWand_.lib'))) {
+              Get-ChildItem $dest -Recurse -Filter '*.lib' | ForEach-Object { Write-Host "    $($_.FullName)" }
+              throw "Extraction succeeded but lib\CORE_RL_MagickWand_.lib is absent."
             }
           }
 
@@ -202,24 +199,21 @@ jobs:
           }
           if (-not $found) {
             $installer = Join-Path $env:RUNNER_TEMP 'imagemagick.exe'
-            Invoke-WebRequest -Uri $env:IM_URL `
-                              -OutFile $installer -UseBasicParsing
+            Invoke-WebRequest -Uri $env:IM_URL -OutFile $installer -UseBasicParsing
             Write-Host ("  downloaded {0:N1} MB" -f ((Get-Item $installer).Length / 1MB))
-            $log     = Join-Path $env:RUNNER_TEMP 'imagemagick-install.log'
-            # No /DIR: this installer ignores it and installs to its default
-            # location under C:\Program Files, which is what gets scanned below.
-            $proc = Start-Process -FilePath $installer -Wait -PassThru -NoNewWindow `
-              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART', "/LOG=`"$log`""
-            Write-Host "  installer exit code: $($proc.ExitCode)"
-            if (Test-Path $log) { Get-Content $log -Tail 12 | ForEach-Object { Write-Host "  [inno] $_" } }
 
-            # Re-evaluate every candidate: the installer uses its own default
-            # location, so $target alone reported "not found" even on success.
-            $found = $null
-            foreach ($root in ($candidates +
-                               (Get-ChildItem 'C:\Program Files' -Directory -Filter 'ImageMagick*' -EA SilentlyContinue |
-                                ForEach-Object { $_.FullName })) | Select-Object -Unique) {
-              if (Test-Path (Join-Path $root 'lib\CORE_RL_MagickWand_.lib')) { $found = $root; break }
+            # Extract, not install: the import library is in a non-default
+            # installer component that a silent install skips. See the rust job.
+            $tool = Join-Path $env:RUNNER_TEMP 'innoextract.exe'
+            Invoke-WebRequest -Uri $env:INNOEXTRACT_URL -OutFile "$tool.zip" -UseBasicParsing
+            Expand-Archive "$tool.zip" -DestinationPath "$env:RUNNER_TEMP\ie" -Force
+            $dest = Join-Path $env:RUNNER_TEMP 'imagemagick'
+            & $tool --extract --output-dir $dest --silent $installer
+            if ($LASTEXITCODE -ne 0) { throw "innoextract failed with exit code $LASTEXITCODE" }
+
+            $found = Join-Path $dest 'app'
+            if (-not (Test-Path (Join-Path $found 'lib\CORE_RL_MagickWand_.lib'))) {
+              throw "Extraction succeeded but lib\CORE_RL_MagickWand_.lib is absent."
             }
           }
           if (-not $found) {
